@@ -59,6 +59,18 @@ impl InMemIndex {
         Ok(Self { entries: out })
     }
 
+    pub fn push_entry(&mut self, segment_id: u64, entry: &IndexEntry) {
+        self.entries.push(IndexRef {
+            segment_id,
+            first_id: entry.first_id,
+            last_id: entry.last_id,
+            file_offset: entry.file_offset,
+            block_len: entry.block_len,
+            uncompressed_len: entry.uncompressed_len,
+            records: entry.records,
+        });
+    }
+
     /// Lower bound: first index whose last_id >= target.
     pub fn lower_bound(&self, target: u64) -> Option<usize> {
         let mut lo = 0usize;

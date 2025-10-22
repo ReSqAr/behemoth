@@ -19,7 +19,7 @@ use crate::error::StreamError;
 use crate::format::headers::{BlockFooter, BlockHeader};
 use crate::format::index::IndexEntry;
 use crate::format::{CodecId, VERSION_1};
-use crate::index_inmem::{InMemIndex, IndexRef};
+use crate::index_inmem::InMemIndex;
 use crate::io::segment::{SegmentFiles, open_active_segment, rotate_segment};
 use crate::io::snapshot::stream_index_snapshot;
 use crate::{Compression, Offset};
@@ -63,6 +63,87 @@ struct OpenBlock {
     records: u32,
     uncompressed_len: u32,
     sink: PayloadSink<CountingWriter<BufWriter<File>>>,
+}
+
+impl OpenBlock {
+    fn begin(
+        segment: &mut SegmentFiles,
+        compression: Compression,
+        write_buffer: usize,
+        next_id: u64,
+    ) -> io::Result<Self> {
+        let codec = match compression {
+            Compression::None => CodecId::None,
+            Compression::Zstd { .. } => CodecId::Zstd,
+        };
+
+        let header_offset = segment.append_block_header(codec)?;
+        let writer = segment.log.try_clone()?;
+        let buf = BufWriter::with_capacity(write_buffer, writer);
+        let sink = PayloadSink::new(CountingWriter::new(buf), compression)?;
+        Ok(Self {
+            header_offset,
+            first_id: next_id,
+            records: 0,
+            uncompressed_len: 0,
+            sink,
+        })
+    }
+
+    fn write_record<C: Codec>(&mut self, codec: &C, value: &C::Value) -> Result<(), StreamError> {
+        let mut tmp = Vec::with_capacity(256);
+        codec
+            .encode_into(value, &mut tmp)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(StreamError::Io)?;
+        if tmp.len() > u32::MAX as usize {
+            return Err(StreamError::Io(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "record too large",
+            )));
+        }
+
+        let len = tmp.len() as u32;
+        self.sink
+            .write_all(&len.to_le_bytes())
+            .map_err(StreamError::Io)?;
+        self.sink.write_all(&tmp).map_err(StreamError::Io)?;
+        self.records = self.records.saturating_add(1);
+        self.uncompressed_len = self.uncompressed_len.saturating_add(4).saturating_add(len);
+        Ok(())
+    }
+
+    fn finish(self, segment: &mut SegmentFiles) -> io::Result<Option<IndexEntry>> {
+        if self.records == 0 {
+            return Ok(None);
+        }
+
+        let writer = self.sink.finish()?;
+        let compressed_len = writer.written as u32;
+
+        segment.append_block_footer()?;
+
+        let block_len = (BlockHeader::SIZE as u32)
+            .saturating_add(compressed_len)
+            .saturating_add(BlockFooter::SIZE as u32);
+        let last_id = self
+            .first_id
+            .saturating_add((self.records as u64).saturating_sub(1));
+
+        let entry = IndexEntry {
+            version: VERSION_1,
+            first_id: self.first_id,
+            last_id,
+            file_offset: self.header_offset,
+            block_len,
+            records: self.records,
+            uncompressed_len: self.uncompressed_len,
+            compressed_len,
+            flags: 0,
+        };
+
+        Ok(Some(entry))
+    }
 }
 
 struct CountingWriter<W: Write> {
@@ -251,30 +332,14 @@ impl<C: Codec> WriterInner<C> {
     }
 
     fn start_block(&mut self) -> io::Result<()> {
-        // Compute starting offset as current file length
-        let header_offset = self.segment().log.metadata().map(|m| m.len())?; // O_APPEND; safe with serialized access
-
-        // Write minimal BlockHeader (codec only)
-        let bh = BlockHeader::new(match self.cfg.compression {
-            Compression::None => CodecId::None,
-            Compression::Zstd { .. } => CodecId::Zstd,
-        });
-        let mut buf = Vec::with_capacity(BlockHeader::SIZE);
-        bh.encode_to(&mut buf)?;
-        self.segment_mut().log.write_all(&buf)?;
-
-        // Build streaming sink
-        let w = self.segment().log.try_clone()?;
-        let bw = BufWriter::with_capacity(self.cfg.write_buffer, w);
-        let cw = CountingWriter::new(bw);
-        let sink = PayloadSink::new(cw, self.cfg.compression)?;
-        self.state = WriterState::Open(OpenBlock {
-            header_offset,
-            first_id: self.next_id,
-            records: 0,
-            uncompressed_len: 0,
-            sink,
-        });
+        let compression = self.cfg.compression;
+        let write_buffer = self.cfg.write_buffer;
+        let next_id = self.next_id;
+        let block = {
+            let segment = self.segment_mut();
+            OpenBlock::begin(segment, compression, write_buffer, next_id)?
+        };
+        self.state = WriterState::Open(block);
         Ok(())
     }
 
@@ -289,42 +354,24 @@ impl<C: Codec> WriterInner<C> {
             self.start_block()?;
         }
 
-        // Must be open now
-        let ob = match &mut self.state {
-            WriterState::Open(b) => b,
-            _ => unreachable!(),
-        };
-
-        // Encode into a bounded temp buffer to know the length prefix.
-        let mut tmp = Vec::with_capacity(256);
-        self.codec
-            .encode_into(value, &mut tmp)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-            .map_err(StreamError::Io)?;
-        if tmp.len() > u32::MAX as usize {
-            return Err(StreamError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "record too large",
-            )));
+        {
+            let block = match &mut self.state {
+                WriterState::Open(block) => block,
+                _ => unreachable!(),
+            };
+            block.write_record(&self.codec, value)?;
         }
-        let len = tmp.len() as u32;
-        let len_bytes = len.to_le_bytes();
-        ob.sink.write_all(&len_bytes).map_err(StreamError::Io)?;
-        ob.sink.write_all(&tmp).map_err(StreamError::Io)?;
-        ob.records = ob.records.saturating_add(1);
-        ob.uncompressed_len = ob.uncompressed_len.saturating_add(4).saturating_add(len);
+
         self.next_id = self.next_id.saturating_add(1);
 
         // Auto-roll if we've reached/exceeded the target:
         // - seal current block (footer + index entry), NO fsync, push to pending
         // - immediately start a fresh block so the next push continues smoothly
         let target = self.cfg.block_target_uncompressed as u32;
-        if target > 0 {
-            if let WriterState::Open(ref ob2) = self.state {
-                if ob2.uncompressed_len >= target {
-                    self.roll_block_soft()?; // leaves state = Open(new) because we start_block() at end
-                }
-            }
+        let should_roll = target > 0
+            && matches!(&self.state, WriterState::Open(block) if block.uncompressed_len >= target);
+        if should_roll {
+            self.roll_block_soft()?; // leaves state = Open(new) because we start_block() at end
         }
 
         Ok(())
@@ -357,37 +404,11 @@ impl<C: Codec> WriterInner<C> {
             return Ok(self.watermark.map(Offset));
         }
 
-        // Durability: first .log, then .idx (publishes ALL pending entries)
-        self.segment().log.sync_all()?;
-        self.segment().idx.sync_all()?;
+        self.commit_pending_entries()?;
 
-        // Mirror committed entries to RAM index + bump watermark + notify
-        let mut pending = std::mem::take(&mut self.pending);
-        for entry in pending.drain(..) {
-            let mut ebuf = Vec::with_capacity(IndexEntry::SIZE);
-            entry.encode_to(&mut ebuf)?;
-            self.segment_mut().idx.write_all(&ebuf)?;
-
-            self.index.entries.push(IndexRef {
-                segment_id: self.segment().id,
-                first_id: entry.first_id,
-                last_id: entry.last_id,
-                file_offset: entry.file_offset,
-                block_len: entry.block_len,
-                uncompressed_len: entry.uncompressed_len,
-                records: entry.records,
-            });
-            self.watermark = Some(entry.last_id);
-            if let Some(tx) = &self.watermark_tx {
-                let _ = tx.send(self.watermark);
-            }
-        }
-        self.pending = pending;
-
-        // Rotate after commit if needed (between blocks)
-        let file_len = self.segment().log.metadata()?.len();
-        if file_len >= self.cfg.segment_max_bytes {
-            self.seg = Some(rotate_segment(self.segment())?);
+        if self.segment().should_rotate(self.cfg.segment_max_bytes)? {
+            let current = self.segment();
+            self.seg = Some(rotate_segment(current)?);
         }
 
         Ok(self.watermark.map(Offset))
@@ -412,54 +433,48 @@ impl<C: Codec> WriterInner<C> {
 
     fn roll_block_soft(&mut self) -> io::Result<()> {
         // Take current block; if none, nothing to do
-        let ob = match std::mem::replace(&mut self.state, WriterState::Idle) {
-            WriterState::Open(ob) => ob,
+        let block = match std::mem::replace(&mut self.state, WriterState::Idle) {
+            WriterState::Open(block) => block,
             _ => return Ok(()),
         };
 
-        // If no records were written, emit nothing (no footer, no index entry)
-        if ob.records == 0 {
+        if let Some(entry) = block.finish(self.segment_mut())? {
+            self.pending.push(entry);
+            self.start_block()?;
+        }
+
+        Ok(())
+    }
+
+    fn commit_pending_entries(&mut self) -> io::Result<()> {
+        if self.pending.is_empty() {
             return Ok(());
         }
 
-        // Finish compressor, compute sizes
-        let cw = ob.sink.finish()?;
-        let compressed_len = cw.written as u32;
+        {
+            let segment = self.segment_mut();
+            segment.sync_log()?;
+            segment.sync_index()?;
+        }
 
-        // Footer
-        let ftr = BlockFooter::default();
-        let mut buf = Vec::with_capacity(BlockFooter::SIZE);
-        ftr.encode_to(&mut buf)?;
-        self.segment_mut().log.write_all(&buf)?;
+        for entry in std::mem::take(&mut self.pending) {
+            self.publish_entry(entry)?;
+        }
 
-        // Final sizes
-        let block_len = (BlockHeader::SIZE as u32)
-            .saturating_add(compressed_len)
-            .saturating_add(BlockFooter::SIZE as u32);
+        Ok(())
+    }
 
-        // IDs
-        let first_id = ob.first_id;
-        let last_id = first_id + (ob.records as u64).saturating_sub(1);
-
-        // Append index entry to current .idx (NO fsync here)
-        let entry = IndexEntry {
-            version: VERSION_1,
-            first_id,
-            last_id,
-            file_offset: ob.header_offset,
-            block_len,
-            records: ob.records,
-            uncompressed_len: ob.uncompressed_len,
-            compressed_len,
-            flags: 0,
-        };
-
-        // Keep it pending; publish on flush()
-        self.pending.push(entry);
-
-        // Immediately start the next block so subsequent push() continues smoothly
-        self.start_block()?;
-
+    fn publish_entry(&mut self, entry: IndexEntry) -> io::Result<()> {
+        let segment_id = self.segment().id;
+        {
+            let segment = self.segment_mut();
+            segment.append_index_entry(&entry)?;
+        }
+        self.index.push_entry(segment_id, &entry);
+        self.watermark = Some(entry.last_id);
+        if let Some(tx) = &self.watermark_tx {
+            let _ = tx.send(self.watermark);
+        }
         Ok(())
     }
 }

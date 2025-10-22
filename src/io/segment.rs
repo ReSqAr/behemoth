@@ -2,12 +2,13 @@
 use std::os::unix::fs::OpenOptionsExt;
 use std::{
     fs::{File, OpenOptions, read_dir},
-    io::{self, Read, Seek, SeekFrom},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
-use crate::format::headers::FileHeader;
-use crate::format::index::IndexHeader;
+use crate::format::CodecId;
+use crate::format::headers::{BlockFooter, BlockHeader, FileHeader};
+use crate::format::index::{IndexEntry, IndexHeader};
 
 /// Pair of opened files for the active segment.
 pub struct SegmentFiles {
@@ -15,6 +16,56 @@ pub struct SegmentFiles {
     pub log: File,
     pub idx: File,
     pub dir: PathBuf,
+}
+
+impl SegmentFiles {
+    /// Current length of the active log file.
+    pub fn log_len(&self) -> io::Result<u64> {
+        self.log.metadata().map(|m| m.len())
+    }
+
+    /// Append a block header for the given codec, returning its starting offset.
+    pub fn append_block_header(&mut self, codec: CodecId) -> io::Result<u64> {
+        let offset = self.log_len()?;
+        let header = BlockHeader::new(codec);
+        let mut buf = Vec::with_capacity(BlockHeader::SIZE);
+        header.encode_to(&mut buf)?;
+        self.log.write_all(&buf)?;
+        Ok(offset)
+    }
+
+    /// Append the trailing block footer marker.
+    pub fn append_block_footer(&mut self) -> io::Result<()> {
+        let footer = BlockFooter::default();
+        let mut buf = Vec::with_capacity(BlockFooter::SIZE);
+        footer.encode_to(&mut buf)?;
+        self.log.write_all(&buf)
+    }
+
+    /// Append a new index entry to the active index file.
+    pub fn append_index_entry(&mut self, entry: &IndexEntry) -> io::Result<()> {
+        let mut buf = Vec::with_capacity(IndexEntry::SIZE);
+        entry.encode_to(&mut buf)?;
+        self.idx.write_all(&buf)
+    }
+
+    /// Sync the log file contents to disk.
+    pub fn sync_log(&mut self) -> io::Result<()> {
+        fsync_file(&mut self.log)
+    }
+
+    /// Sync the index file contents to disk.
+    pub fn sync_index(&mut self) -> io::Result<()> {
+        fsync_file(&mut self.idx)
+    }
+
+    /// Determine whether the active log should rotate based on `max_bytes`.
+    pub fn should_rotate(&self, max_bytes: u64) -> io::Result<bool> {
+        if max_bytes == 0 {
+            return Ok(false);
+        }
+        Ok(self.log.metadata()?.len() >= max_bytes)
+    }
 }
 
 pub fn segment_filename(id: u64) -> (String, String) {
