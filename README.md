@@ -38,13 +38,13 @@ The repo includes a small CLI (`behemoth-cli`) for benchmarking and poking at th
 
 ```bash
 # Add 10M random 256B records, flushing every 100k
-cargo run --release --bin behemoth-cli -- add ./test-test 10000000 100000
+cargo run --release --bin behemoth-cli -- add ./behemoth-test 10000000 100000
 
 # List committed blocks in the stream
-cargo run --release --bin behemoth-cli -- list-blocks ./test-test
+cargo run --release --bin behemoth-cli -- list-blocks ./behemoth-test
 
 # Read records starting at offset 66,591,900 (read 200 records)
-cargo run --release --bin behemoth-cli -- read test-test 66591900 200
+cargo run --release --bin behemoth-cli -- read ./behemoth-test 66591900 200
 ```
 
 You’ll see throughput, segment rotation, and decompression in action.
