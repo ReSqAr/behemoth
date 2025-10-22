@@ -1,7 +1,7 @@
 use crate::codec::Codec;
 use crate::format::index::IndexEntry;
-use crate::io::segment::{rotate_segment, SegmentFiles};
-use crate::open_block::OpenBlock;
+use crate::io::open_block::OpenBlock;
+use crate::io::segment::{SegmentFiles, rotate_segment};
 use crate::{InMemIndex, Offset, StreamConfig, StreamError};
 use std::io;
 use std::sync::{Arc, RwLock};

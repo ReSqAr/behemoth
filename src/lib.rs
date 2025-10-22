@@ -4,7 +4,6 @@ mod error;
 mod format;
 mod index_inmem;
 mod io;
-mod open_block;
 mod reader;
 mod tests;
 mod writer;
