@@ -20,6 +20,7 @@ use crate::format::headers::{BlockFooter, BlockHeader};
 use crate::format::index::IndexEntry;
 use crate::format::{CodecId, VERSION_1};
 use crate::index_inmem::{InMemIndex, IndexRef};
+use crate::io::counting_writer::CountingWriter;
 use crate::io::segment::{SegmentFiles, open_active_segment, rotate_segment};
 use crate::io::tail_log_cache::TailLogCache;
 use crate::{Compression, Offset};
@@ -120,7 +121,7 @@ impl OpenBlock {
         }
 
         let writer = self.sink.finish()?;
-        let compressed_len = writer.written as u32;
+        let compressed_len = writer.written() as u32;
 
         segment.append_block_footer()?;
 
@@ -144,28 +145,6 @@ impl OpenBlock {
         };
 
         Ok(Some(entry))
-    }
-}
-
-struct CountingWriter<W: Write> {
-    w: W,
-    written: u64,
-}
-
-impl<W: Write> CountingWriter<W> {
-    fn new(w: W) -> CountingWriter<W> {
-        Self { w, written: 0 }
-    }
-}
-
-impl<W: Write> Write for CountingWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let n = self.w.write(buf)?;
-        self.written += n as u64;
-        Ok(n)
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        self.w.flush()
     }
 }
 
