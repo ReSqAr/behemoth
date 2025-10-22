@@ -20,8 +20,8 @@ use crate::format::headers::{BlockFooter, BlockHeader};
 use crate::format::index::IndexEntry;
 use crate::format::{CodecId, VERSION_1};
 use crate::index_inmem::{InMemIndex, IndexRef};
-use crate::io::reader_block::open_block_stream_at_path;
 use crate::io::segment::{SegmentFiles, open_active_segment, rotate_segment};
+use crate::io::snapshot::stream_index_snapshot;
 use crate::{Compression, Offset};
 
 /// Public async writer. All operations serialize through an async Mutex, and
@@ -208,56 +208,25 @@ impl<C: Codec> AsyncStreamWriter<C> {
             let mut next_id = from.0;
 
             loop {
-                let index = InMemIndex::load_all(&dir, bufread)?;
+                let index = Arc::new(InMemIndex::load_all(&dir, bufread)?);
                 if let Some(upper) = index.watermark() {
                     if next_id <= upper {
-                        let mut cur_seg_id: Option<u64> = None;
+                        let mut snapshot = stream_index_snapshot(
+                            dir.clone(),
+                            bufread,
+                            codec.clone(),
+                            index.clone(),
+                            next_id,
+                            upper,
+                        );
 
-                        if let Some(start) = index.lower_bound(next_id) {
-                            for i in start..index.entries.len() {
-                                let e = index.entries[i];
-                                if e.first_id > upper { break; }
-
-                                // (Re)open segment file if changed
-                                if cur_seg_id != Some(e.segment_id) {
-                                    cur_seg_id = Some(e.segment_id);
-                                }
-
-                                // Streaming payload view (no big allocations)
-                                let (log_name, _) = crate::io::segment::segment_filename(e.segment_id);
-                                let path = dir.join(log_name);
-                                let (_hdr, mut payload) = open_block_stream_at_path(&path, e.file_offset, e.block_len, bufread)?;
-
-                                // Skip up to next_id within this block
-                                let mut id = e.first_id;
-                                while id < next_id {
-                                    if payload.next_record_bytes()?.is_none() { break; }
-                                    id += 1;
-                                }
-
-                                // Yield records up to min(last_id, upper)
-                                let limit = upper.min(e.last_id);
-                                while id <= limit {
-                                    if let Some(mut bytes) = payload.next_record_bytes()? {
-                                        // Pass a cursor over the record's bytes to the codec (trait expects &mut dyn Read)
-                                        let mut cur = std::io::Cursor::new(&mut bytes[..]);
-                                        let v = codec
-                                            .decode_from(&mut cur)
-                                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                                        yield (Offset(id), v);
-                                        id += 1;
-                                    } else {
-                                        Err::<_, StreamError>(io::Error::new(io::ErrorKind::Other, "unexpected end of block payload").into())?;
-                                    }
-                                }
-
-                                // Consume & validate footer before next block
-                                payload.finish()?;
-
-                                next_id = id;
-                                if next_id > upper { break; }
-                            }
+                        let mut consumed = next_id;
+                        while let Some(item) = snapshot.next().await {
+                            let (offset, value) = item?;
+                            consumed = offset.0.saturating_add(1);
+                            yield (offset, value);
                         }
+                        next_id = consumed;
                     }
                 }
 
@@ -267,14 +236,23 @@ impl<C: Codec> AsyncStreamWriter<C> {
                     if *watermark_rx.borrow() <= before { break; }
                 }
             }
-        }.boxed()
+        }
+        .boxed()
     }
 }
 
 impl<C: Codec> WriterInner<C> {
+    fn segment(&self) -> &SegmentFiles {
+        self.seg.as_ref().expect("active segment missing")
+    }
+
+    fn segment_mut(&mut self) -> &mut SegmentFiles {
+        self.seg.as_mut().expect("active segment missing")
+    }
+
     fn start_block(&mut self) -> io::Result<()> {
         // Compute starting offset as current file length
-        let header_offset = self.seg.as_ref().unwrap().log.metadata().map(|m| m.len())?; // O_APPEND; safe with serialized access
+        let header_offset = self.segment().log.metadata().map(|m| m.len())?; // O_APPEND; safe with serialized access
 
         // Write minimal BlockHeader (codec only)
         let bh = BlockHeader::new(match self.cfg.compression {
@@ -283,10 +261,10 @@ impl<C: Codec> WriterInner<C> {
         });
         let mut buf = Vec::with_capacity(BlockHeader::SIZE);
         bh.encode_to(&mut buf)?;
-        self.seg.as_mut().unwrap().log.write_all(&buf)?;
+        self.segment_mut().log.write_all(&buf)?;
 
         // Build streaming sink
-        let w = self.seg.as_ref().unwrap().log.try_clone()?;
+        let w = self.segment().log.try_clone()?;
         let bw = BufWriter::with_capacity(self.cfg.write_buffer, w);
         let cw = CountingWriter::new(bw);
         let sink = PayloadSink::new(cw, self.cfg.compression)?;
@@ -380,17 +358,18 @@ impl<C: Codec> WriterInner<C> {
         }
 
         // Durability: first .log, then .idx (publishes ALL pending entries)
-        self.seg.as_ref().unwrap().log.sync_all()?;
-        self.seg.as_ref().unwrap().idx.sync_all()?;
+        self.segment().log.sync_all()?;
+        self.segment().idx.sync_all()?;
 
         // Mirror committed entries to RAM index + bump watermark + notify
-        for entry in self.pending.drain(..) {
+        let mut pending = std::mem::take(&mut self.pending);
+        for entry in pending.drain(..) {
             let mut ebuf = Vec::with_capacity(IndexEntry::SIZE);
             entry.encode_to(&mut ebuf)?;
-            self.seg.as_mut().unwrap().idx.write_all(&ebuf)?;
+            self.segment_mut().idx.write_all(&ebuf)?;
 
             self.index.entries.push(IndexRef {
-                segment_id: self.seg.as_ref().unwrap().id,
+                segment_id: self.segment().id,
                 first_id: entry.first_id,
                 last_id: entry.last_id,
                 file_offset: entry.file_offset,
@@ -403,11 +382,12 @@ impl<C: Codec> WriterInner<C> {
                 let _ = tx.send(self.watermark);
             }
         }
+        self.pending = pending;
 
         // Rotate after commit if needed (between blocks)
-        let file_len = self.seg.as_ref().unwrap().log.metadata()?.len();
+        let file_len = self.segment().log.metadata()?.len();
         if file_len >= self.cfg.segment_max_bytes {
-            self.seg = Some(rotate_segment(&self.seg.as_ref().unwrap())?);
+            self.seg = Some(rotate_segment(self.segment())?);
         }
 
         Ok(self.watermark.map(Offset))
@@ -450,7 +430,7 @@ impl<C: Codec> WriterInner<C> {
         let ftr = BlockFooter::default();
         let mut buf = Vec::with_capacity(BlockFooter::SIZE);
         ftr.encode_to(&mut buf)?;
-        self.seg.as_mut().unwrap().log.write_all(&buf)?;
+        self.segment_mut().log.write_all(&buf)?;
 
         // Final sizes
         let block_len = (BlockHeader::SIZE as u32)
