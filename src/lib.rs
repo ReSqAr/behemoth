@@ -4,9 +4,11 @@ mod error;
 mod format;
 mod index_inmem;
 mod io;
+mod open_block;
 mod reader;
 mod tests;
 mod writer;
+mod writer_inner;
 
 pub use crate::config::StreamConfig;
 pub use crate::error::StreamError;
