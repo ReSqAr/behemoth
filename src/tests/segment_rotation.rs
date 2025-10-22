@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::{AsyncStreamReader, AsyncStreamWriter, Compression, Offset, StreamConfig, codec};
+    use crate::{
+        AsyncStreamReader, AsyncStreamWriter, Compression, InMemIndex, Offset, StreamConfig, codec,
+    };
     use futures_util::TryStreamExt;
     use serde::{Deserialize, Serialize};
 
@@ -8,6 +10,32 @@ mod tests {
     struct Ev {
         n: u64,
         pad: Vec<u8>,
+    }
+
+    #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone)]
+    struct IdEvent {
+        id: u64,
+    }
+
+    fn assert_id_sequence(label: &str, events: &[(u64, IdEvent)], expected: u64) {
+        assert_eq!(
+            events.len(),
+            expected as usize,
+            "{label}: expected {expected} events, got {}",
+            events.len()
+        );
+        for (idx, (off, ev)) in events.iter().enumerate() {
+            let idx_u64 = idx as u64;
+            assert_eq!(
+                *off, idx_u64,
+                "{label}: offset mismatch at {idx} (expected {idx_u64}, got {off})"
+            );
+            assert_eq!(
+                ev.id, idx_u64,
+                "{label}: event id mismatch at {idx} (expected {idx_u64}, got {})",
+                ev.id
+            );
+        }
     }
 
     // Helper to push ~N bytes (uncompressed) via multiple events.
@@ -84,5 +112,154 @@ mod tests {
         }
 
         writer.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tail_and_reader_handle_extreme_block_rotation() {
+        const TOTAL: u64 = 100;
+        let dir = tempfile::tempdir().unwrap();
+
+        let cfg = StreamConfig::builder(dir.path())
+            .block_target_uncompressed(1)
+            .segment_max_bytes(1 << 20)
+            .compression(Compression::None)
+            .build();
+
+        let writer = AsyncStreamWriter::<codec::SerdeBincode<IdEvent>>::open(
+            cfg.clone(),
+            codec::SerdeBincode::<IdEvent>::new(),
+        )
+        .await
+        .unwrap();
+
+        let tail_handle = {
+            let tail_stream = writer.tail(Offset(0));
+            tokio::spawn(async move {
+                tail_stream
+                    .map_ok(|(off, ev)| (off.0, ev))
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap()
+            })
+        };
+
+        for id in 0..TOTAL {
+            writer.push(&IdEvent { id }).await.unwrap();
+            let wm = writer.flush().await.unwrap().expect("watermark");
+            assert_eq!(wm.0, id, "watermark mismatch after flushing id {id}");
+        }
+        assert_eq!(writer.watermark(), Some(TOTAL - 1));
+
+        writer.close().await.unwrap();
+
+        let tail_events = tail_handle.await.unwrap();
+        assert_id_sequence("tail", &tail_events, TOTAL);
+
+        let reader = AsyncStreamReader::<codec::SerdeBincode<IdEvent>>::open(
+            cfg.clone(),
+            codec::SerdeBincode::<IdEvent>::new(),
+        )
+        .await
+        .unwrap();
+
+        let mut reader_events = Vec::new();
+        let mut stream = reader.from(Offset(0));
+        while let Some((off, ev)) = stream.try_next().await.unwrap() {
+            reader_events.push((off.0, ev));
+        }
+        assert_id_sequence("reader", &reader_events, TOTAL);
+
+        assert_eq!(tail_events, reader_events, "tail and reader diverged");
+
+        let index = InMemIndex::load_all(&cfg.dir, cfg.read_buffer).unwrap();
+        assert_eq!(index.entries.len(), TOTAL as usize);
+        for (i, entry) in index.entries.iter().enumerate() {
+            assert_eq!(entry.segment_id, 0, "expected single segment for entry {i}");
+            let id = i as u64;
+            assert_eq!(entry.first_id, id, "first_id mismatch at entry {i}");
+            assert_eq!(entry.last_id, id, "last_id mismatch at entry {i}");
+            assert_eq!(
+                entry.records, 1,
+                "expected one record per block at entry {i}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tail_and_reader_handle_extreme_segment_rotation() {
+        const TOTAL: u64 = 100;
+        let dir = tempfile::tempdir().unwrap();
+
+        let cfg = StreamConfig::builder(dir.path())
+            .block_target_uncompressed(1 << 20)
+            .segment_max_bytes(1)
+            .compression(Compression::None)
+            .build();
+
+        let writer = AsyncStreamWriter::<codec::SerdeBincode<IdEvent>>::open(
+            cfg.clone(),
+            codec::SerdeBincode::<IdEvent>::new(),
+        )
+        .await
+        .unwrap();
+
+        let tail_handle = {
+            let tail_stream = writer.tail(Offset(0));
+            tokio::spawn(async move {
+                tail_stream
+                    .map_ok(|(off, ev)| (off.0, ev))
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap()
+            })
+        };
+
+        for id in 0..TOTAL {
+            writer.push(&IdEvent { id }).await.unwrap();
+            let wm = writer.flush().await.unwrap().expect("watermark");
+            assert_eq!(wm.0, id, "watermark mismatch after flushing id {id}");
+        }
+        assert_eq!(writer.watermark(), Some(TOTAL - 1));
+
+        writer.close().await.unwrap();
+
+        let tail_events = tail_handle.await.unwrap();
+        assert_id_sequence("tail", &tail_events, TOTAL);
+
+        let reader = AsyncStreamReader::<codec::SerdeBincode<IdEvent>>::open(
+            cfg.clone(),
+            codec::SerdeBincode::<IdEvent>::new(),
+        )
+        .await
+        .unwrap();
+
+        let mut reader_events = Vec::new();
+        let mut stream = reader.from(Offset(0));
+        while let Some((off, ev)) = stream.try_next().await.unwrap() {
+            reader_events.push((off.0, ev));
+        }
+        assert_id_sequence("reader", &reader_events, TOTAL);
+        assert_eq!(tail_events, reader_events, "tail and reader diverged");
+
+        let index = InMemIndex::load_all(&cfg.dir, cfg.read_buffer).unwrap();
+        assert_eq!(index.entries.len(), TOTAL as usize);
+        for (i, entry) in index.entries.iter().enumerate() {
+            let id = i as u64;
+            assert_eq!(entry.segment_id, id, "segment mismatch at entry {i}");
+            assert_eq!(entry.first_id, id, "first_id mismatch at entry {i}");
+            assert_eq!(entry.last_id, id, "last_id mismatch at entry {i}");
+            assert_eq!(
+                entry.records, 1,
+                "expected single-record segments at entry {i}"
+            );
+        }
+
+        // The next empty segment should already exist because each flush rotated.
+        let next_segment = format!("{TOTAL:08}.idx");
+        assert!(
+            std::fs::metadata(cfg.dir.join(&next_segment)).is_ok(),
+            "expected placeholder index file {} for next segment",
+            next_segment
+        );
     }
 }
