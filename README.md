@@ -3,7 +3,7 @@
 **Behemoth** is a durable, append-only log engine for structured data — an experimental async storage substrate for event streams.
 
 It’s built in Rust, with a focus on correctness, simplicity, and low-latency block commits.
-Not production-ready (yet) — but it’s *largely functional*, passes all 12 tests, and already writes around **170 MB/s** for 256 B objects (with compression).
+Not production-ready (yet) — but it’s *largely functional*, passes all 13 tests, and already writes around **170 MB/s** for 256 B objects (with compression).
 
 ---
 
@@ -64,7 +64,7 @@ You’ll see throughput, segment rotation, and decompression in action.
 ## ⚠️ Status
 
 * **Not production-ready**
-* **“Vibe-coded”** - test coverage is at 78%
+* **“Vibe-coded”** - test coverage is at 80%
 * **No compaction, no recovery beyond truncation**
 * **Unoptimized** yet still fast (≈ 170 MB/s in synthetic tests)
 

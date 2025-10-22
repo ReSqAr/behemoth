@@ -1,3 +1,4 @@
+mod bounded_reader;
 mod crash_recovery;
 mod flush_and_compression;
 mod segment_rotation;
