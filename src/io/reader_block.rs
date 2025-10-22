@@ -14,8 +14,19 @@ pub fn open_block_stream_at_path(
     block_len: u32,
     bufread: usize,
 ) -> io::Result<(BlockHeader, PayloadReaderOwned)> {
+    let file = File::open(path)?;
+    open_block_stream_with_file(&file, offset, block_len, bufread)
+}
+
+/// Open a block using an already-opened file handle.
+pub fn open_block_stream_with_file(
+    file: &File,
+    offset: u64,
+    block_len: u32,
+    bufread: usize,
+) -> io::Result<(BlockHeader, PayloadReaderOwned)> {
     // --- Read and validate header ---
-    let mut fh = File::open(path)?;
+    let mut fh = file.try_clone()?;
     fh.seek(SeekFrom::Start(offset))?;
     let mut hdr_buf = vec![0u8; BlockHeader::SIZE];
     fh.read_exact(&mut hdr_buf)?;
@@ -28,7 +39,7 @@ pub fn open_block_stream_at_path(
     let footer_off = payload_off + payload_len as u64;
 
     // Build the owned payload reader (no &mut borrows!)
-    let mut pf = std::fs::File::open(path)?;
+    let mut pf = file.try_clone()?;
     pf.seek(SeekFrom::Start(payload_off))?;
     let take = pf.take(payload_len as u64);
 
@@ -52,7 +63,7 @@ pub fn open_block_stream_at_path(
     };
 
     // separate handle for footer validation
-    let ff = std::fs::File::open(path)?;
+    let ff = file.try_clone()?;
 
     Ok((
         hdr,
