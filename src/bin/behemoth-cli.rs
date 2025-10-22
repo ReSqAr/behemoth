@@ -4,7 +4,8 @@ use std::time::{Duration, Instant, SystemTime};
 use clap::{Parser, Subcommand};
 
 use behemoth::{
-    AsyncStreamReader, AsyncStreamWriter, InMemIndex, Offset, SerdeBincode, StreamConfig,
+    AsyncStreamReader, AsyncStreamWriter, Compression, InMemIndex, Offset, SerdeBincode,
+    StreamConfig,
 };
 
 #[derive(clap::Parser, Debug)]
@@ -161,7 +162,9 @@ async fn cmd_add(
     n: u64,
     flush_every: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = StreamConfig::builder(&path).build();
+    let cfg = StreamConfig::builder(&path)
+        .compression(Compression::Zstd { level: 3 })
+        .build();
     let writer =
         AsyncStreamWriter::<SerdeBincode<Element>>::open(cfg.clone(), SerdeBincode::new()).await?;
 

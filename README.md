@@ -3,7 +3,7 @@
 **Behemoth** is a durable, append-only log engine for structured data — an experimental async storage substrate for event streams.
 
 It’s built in Rust, with a focus on correctness, simplicity, and low-latency block commits.
-Not production-ready (yet) — but it’s *largely functional*, passes all 12 tests, and already writes around **170 MB/s** for 256 B objects.
+Not production-ready (yet) — but it’s *largely functional*, passes all 12 tests, and already writes around **170 MB/s** for 256 B objects (with compression).
 
 ---
 
@@ -43,8 +43,8 @@ cargo run --release --bin behemoth-cli -- add ./behemoth-test 10000000 100000
 # List committed blocks in the stream
 cargo run --release --bin behemoth-cli -- list-blocks ./behemoth-test
 
-# Read records starting at offset 66,591,900 (read 200 records)
-cargo run --release --bin behemoth-cli -- read ./behemoth-test 66591900 200
+# Read records starting at offset 6,591,900 (read 200 records)
+cargo run --release --bin behemoth-cli -- read ./behemoth-test 6591900 200
 ```
 
 You’ll see throughput, segment rotation, and decompression in action.
