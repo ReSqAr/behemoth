@@ -1,5 +1,5 @@
 use crate::format::headers::BlockHeader;
-use crate::io::reader_block::PayloadReaderOwned;
+use crate::io::payload_reader::PayloadReaderOwned;
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
