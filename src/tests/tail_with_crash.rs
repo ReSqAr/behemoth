@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::transaction::Transaction;
     use crate::{AsyncStreamReader, AsyncStreamWriter, Compression, Offset, StreamConfig, codec};
     use futures_util::TryStreamExt;
     use serde::{Deserialize, Serialize};
@@ -14,27 +15,26 @@ mod tests {
 
     // Utility: push a range [start, end) *without* flush; caller decides when to flush.
     async fn push_range<C: crate::codec::Codec<Value = Ev>>(
-        writer: &crate::AsyncStreamWriter<C>,
+        txn: &Transaction<C>,
         start: u64,
         end: u64,
         flush: Option<u64>,
     ) {
         for i in start..end {
-            writer
-                .push(&Ev {
-                    id: i,
-                    pad: vec![0u8; 8 * 1024],
-                })
-                .await
-                .unwrap(); // ~8 KiB/event
+            txn.push(&Ev {
+                id: i,
+                pad: vec![0u8; 8 * 1024],
+            })
+            .await
+            .unwrap(); // ~8 KiB/event
             if let Some(flush) = flush
                 && i % flush == 0
             {
-                writer.flush().await.unwrap();
+                txn.flush().await.unwrap();
             }
         }
         if flush.is_some() {
-            writer.flush().await.unwrap();
+            txn.flush().await.unwrap();
         }
     }
 
@@ -70,18 +70,21 @@ mod tests {
         .await
         .unwrap();
 
-        let tail1 = writer1.tail(Offset(0)); // should see only committed data and end if writer drops
+        let txn1 = writer1.transaction().unwrap();
+
+        let tail1 = txn1.tail(Offset(0)); // should see only committed data and end if writer drops
 
         // Wave A: write [0..40), flush → committed (tail should see these)
-        push_range(&writer1, 0, 40, Some(10)).await;
+        push_range(&txn1, 0, 40, Some(10)).await;
 
         // Wave B: write [40..60) but DO NOT flush — simulate a crash afterwards.
-        push_range(&writer1, 40, 60, None).await;
+        push_range(&txn1, 40, 60, None).await;
 
         // Give the tail a tiny moment to interleave reads (still only sees [0..39]).
         sleep(Duration::from_millis(10)).await;
 
         // Simulate crash: drop writer without close() or flush().
+        drop(txn1);
         drop(writer1);
 
         // The tail’s watermark sender is dropped; it should now end naturally and
@@ -122,6 +125,8 @@ mod tests {
         .await
         .unwrap();
 
+        let txn2 = writer2.transaction().unwrap();
+
         // Continue IDs from 60 upward to make continuity easy to spot later.
         // Do multiple flushes to cross block and segment thresholds.
         let total_more = 100u64; // write 100 more records
@@ -129,12 +134,12 @@ mod tests {
         let mut start = 60u64;
         while start < 60 + total_more {
             let end = (start + batch).min(60 + total_more);
-            push_range(&writer2, start, end, Some(10)).await;
+            push_range(&txn2, start, end, Some(10)).await;
             start = end;
         }
 
         // Close cleanly; this must flush any final open block and end of stream.
-        writer2.close().await.unwrap();
+        txn2.close().await.unwrap();
 
         // Sanity: rotated files should exist (00000001.* at least) because thresholds are tiny.
         let p0_log = dir.path().join("00000000.log");

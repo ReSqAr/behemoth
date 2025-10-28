@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::transaction::Transaction;
     use crate::{
         AsyncStreamReader, AsyncStreamWriter, Compression, InMemIndex, Offset, StreamConfig, codec,
     };
@@ -40,7 +41,7 @@ mod tests {
 
     // Helper to push ~N bytes (uncompressed) via multiple events.
     async fn push_bytes<C: crate::codec::Codec<Value = Ev>>(
-        writer: &crate::AsyncStreamWriter<C>,
+        txn: &Transaction<C>,
         target_bytes: usize,
     ) {
         let payload = vec![0u8; 8 * 1024]; // 8 KiB/event
@@ -51,12 +52,12 @@ mod tests {
                     n: i,
                     pad: payload.clone(),
                 };
-                let _ = writer.push(&ev).await.unwrap();
+                let _ = txn.push(&ev).await.unwrap();
                 sent += 4 + bincode::serde::encode_to_vec(&ev, bincode::config::standard())
                     .unwrap()
                     .len();
             }
-            let _wm = writer.flush().await.unwrap();
+            let _wm = txn.flush().await.unwrap();
         }
     }
 
@@ -78,8 +79,10 @@ mod tests {
         .await
         .unwrap();
 
+        let txn = writer.transaction().unwrap();
+
         // Push enough to exceed ~1.2 MiB so we should land in segment 00000002.*
-        push_bytes(&writer, 1_300_000).await;
+        push_bytes(&txn, 1_300_000).await;
 
         // Verify new segment files exist
         let p0_log = dir.path().join("00000000.log");
@@ -111,7 +114,7 @@ mod tests {
             assert_eq!(*id as usize, i);
         }
 
-        writer.close().await.unwrap();
+        txn.close().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -132,8 +135,10 @@ mod tests {
         .await
         .unwrap();
 
+        let txn = writer.transaction().unwrap();
+
         let tail_handle = {
-            let tail_stream = writer.tail(Offset(0));
+            let tail_stream = txn.tail(Offset(0));
             tokio::spawn(async move {
                 tail_stream
                     .map_ok(|(off, ev)| (off.0, ev))
@@ -144,13 +149,13 @@ mod tests {
         };
 
         for id in 0..TOTAL {
-            writer.push(&IdEvent { id }).await.unwrap();
-            let wm = writer.flush().await.unwrap().expect("watermark");
+            txn.push(&IdEvent { id }).await.unwrap();
+            let wm = txn.flush().await.unwrap().expect("watermark");
             assert_eq!(wm.0, id, "watermark mismatch after flushing id {id}");
         }
         assert_eq!(writer.watermark(), Some(TOTAL - 1));
 
-        writer.close().await.unwrap();
+        txn.close().await.unwrap();
 
         let tail_events = tail_handle.await.unwrap();
         assert_id_sequence("tail", &tail_events, TOTAL);
@@ -203,8 +208,10 @@ mod tests {
         .await
         .unwrap();
 
+        let txn = writer.transaction().unwrap();
+
         let tail_handle = {
-            let tail_stream = writer.tail(Offset(0));
+            let tail_stream = txn.tail(Offset(0));
             tokio::spawn(async move {
                 tail_stream
                     .map_ok(|(off, ev)| (off.0, ev))
@@ -215,13 +222,13 @@ mod tests {
         };
 
         for id in 0..TOTAL {
-            writer.push(&IdEvent { id }).await.unwrap();
-            let wm = writer.flush().await.unwrap().expect("watermark");
+            txn.push(&IdEvent { id }).await.unwrap();
+            let wm = txn.flush().await.unwrap().expect("watermark");
             assert_eq!(wm.0, id, "watermark mismatch after flushing id {id}");
         }
         assert_eq!(writer.watermark(), Some(TOTAL - 1));
 
-        writer.close().await.unwrap();
+        txn.close().await.unwrap();
 
         let tail_events = tail_handle.await.unwrap();
         assert_id_sequence("tail", &tail_events, TOTAL);

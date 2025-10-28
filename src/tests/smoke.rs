@@ -5,6 +5,7 @@ mod tests {
     use crate::Offset;
     use crate::StreamConfig;
     use crate::codec;
+    use futures_util::TryStreamExt;
     use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -22,11 +23,13 @@ mod tests {
         .await
         .unwrap();
 
-        writer.push(&Ev(1)).await.unwrap();
-        writer.push(&Ev(2)).await.unwrap();
-        writer.push(&Ev(3)).await.unwrap();
+        let txn = writer.transaction().unwrap();
 
-        let wm = writer.flush().await.unwrap().unwrap();
+        txn.push(&Ev(1)).await.unwrap();
+        txn.push(&Ev(2)).await.unwrap();
+        txn.push(&Ev(3)).await.unwrap();
+
+        let wm = txn.flush().await.unwrap().unwrap();
         assert_eq!(wm.0, 2);
 
         // bounded reader
@@ -37,13 +40,31 @@ mod tests {
         .await
         .unwrap();
         let mut got = Vec::new();
-        use futures_util::TryStreamExt;
         let mut s = reader.from(Offset(0));
         while let Some((off, ev)) = s.try_next().await.unwrap() {
             got.push((off.0, ev));
         }
         assert_eq!(got, vec![(0, Ev(1)), (1, Ev(2)), (2, Ev(3))]);
 
-        writer.close().await.unwrap();
+        txn.close().await.unwrap();
+
+        let txn = writer.transaction().unwrap();
+
+        txn.push(&Ev(4)).await.unwrap();
+
+        let wm = txn.flush().await.unwrap().unwrap();
+        assert_eq!(wm.0, 3);
+
+        // bounded reader
+        let reader = writer.reader();
+        let mut got = Vec::new();
+        let mut s = reader.from(Offset(0));
+        while let Some((off, ev)) = s.try_next().await.unwrap() {
+            got.push((off.0, ev));
+        }
+        assert_eq!(got, vec![(0, Ev(1)), (1, Ev(2)), (2, Ev(3)), (3, Ev(4))]);
+
+        txn.flush().await.unwrap();
+        txn.close().await.unwrap();
     }
 }

@@ -25,26 +25,26 @@ mod tests {
         .unwrap();
 
         // Start reading from 0 before any data is committed.
-        let stream = writer.tail(Offset(0));
+        let txn = writer.transaction().unwrap();
+        let stream = txn.tail(Offset(0));
 
         // In the background: push in waves, flushing between waves.
-        let writer_bg = writer.clone();
         let bg = tokio::spawn(async move {
             let total = 20u32;
             let wave = 5u32;
 
             for start in (0..total).step_by(wave as usize) {
                 for i in start..(start + wave).min(total) {
-                    writer_bg.push(&Ev(i)).await.unwrap();
+                    txn.push(&Ev(i)).await.unwrap();
                 }
                 // Commit this wave.
-                let _ = writer_bg.flush().await.unwrap();
+                let _ = txn.flush().await.unwrap();
                 // Small pause so the reader can interleave.
                 sleep(Duration::from_millis(10)).await;
             }
 
             // Finalize: close() must flush last open block (if any) and end the stream.
-            writer_bg.close().await.unwrap();
+            txn.close().await.unwrap();
         });
 
         // Collect everything the stream produces until it naturally ends (on close()).

@@ -178,6 +178,8 @@ async fn cmd_add(
     let mut encoded_bytes_since_tick: usize = 0;
     let mut pushed_since_tick: u64 = 0;
 
+    let txn = writer.transaction()?;
+
     for i in 0..n {
         // Build element
         let mut buf = vec![0u8; 256];
@@ -196,11 +198,11 @@ async fn cmd_add(
         pushed_since_tick += 1;
 
         // Push (using the streaming writer)
-        writer.push(&el).await?;
+        txn.push(&el).await?;
 
         // Periodic flush
         if flush_every > 0 && (i + 1) % flush_every == 0 {
-            let _wm = writer.flush().await?;
+            let _wm = txn.flush().await?;
         }
 
         // Progress + speed every ~500ms
@@ -226,7 +228,8 @@ async fn cmd_add(
     }
 
     // Final flush if the last batch didn't land on the boundary
-    let _ = writer.flush().await?;
+    let _ = txn.flush().await?;
+    txn.close().await?;
     println!("\nfinished in {:.2}s", started.elapsed().as_secs_f64());
 
     Ok(())

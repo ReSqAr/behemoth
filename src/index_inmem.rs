@@ -18,6 +18,7 @@ pub struct IndexRef {
     pub records: u32,
 }
 
+#[derive(Clone)]
 pub struct InMemIndex {
     pub entries: Vec<IndexRef>, // sorted by first_id
 }

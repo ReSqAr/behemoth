@@ -6,6 +6,7 @@ mod index_inmem;
 mod io;
 mod reader;
 mod tests;
+mod transaction;
 mod writer;
 mod writer_inner;
 
@@ -13,6 +14,7 @@ pub use crate::config::StreamConfig;
 pub use crate::error::StreamError;
 pub use crate::index_inmem::{InMemIndex, IndexRef};
 pub use crate::reader::AsyncStreamReader;
+pub use crate::transaction::Transaction;
 pub use crate::writer::AsyncStreamWriter;
 
 #[cfg(feature = "serde-bincode")]

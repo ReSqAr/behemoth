@@ -4,14 +4,17 @@ use crate::io::snapshot::stream_index_snapshot;
 use crate::{Offset, StreamError};
 use futures_core::Stream;
 use futures_util::{StreamExt, stream};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, RwLock},
+};
 
 #[derive(Clone)]
 pub struct AsyncStreamReader<C: Codec> {
     dir: PathBuf,
     bufread: usize,
     codec: C,
-    index: Arc<InMemIndex>,
+    index: Arc<RwLock<InMemIndex>>,
 }
 
 impl<C: Codec + Clone + Send + Sync + 'static> AsyncStreamReader<C> {
@@ -22,13 +25,31 @@ impl<C: Codec + Clone + Send + Sync + 'static> AsyncStreamReader<C> {
             dir: cfg.dir,
             bufread: cfg.read_buffer,
             codec,
-            index: Arc::new(index),
+            index: Arc::new(RwLock::new(index)),
         })
+    }
+
+    pub(crate) fn with_shared_index(
+        dir: PathBuf,
+        bufread: usize,
+        codec: C,
+        index: Arc<RwLock<InMemIndex>>,
+    ) -> Self {
+        Self {
+            dir,
+            bufread,
+            codec,
+            index,
+        }
     }
 
     /// Snapshot watermark (last committed id) at time of call.
     pub fn snapshot_watermark(&self) -> Option<Offset> {
-        self.index.watermark().map(Offset)
+        self.index
+            .read()
+            .expect("index lock poisoned")
+            .watermark()
+            .map(Offset)
     }
 
     /// Bounded pass: yields records with id >= `from` and id <= snapshot watermark, then ends.
@@ -41,8 +62,19 @@ impl<C: Codec + Clone + Send + Sync + 'static> AsyncStreamReader<C> {
         let index = self.index.clone();
         let bufread = self.bufread;
 
-        match index.watermark() {
-            Some(upper) => stream_index_snapshot(dir, bufread, codec, index, from.0, upper),
+        let watermark = {
+            let guard = index.read().expect("index lock poisoned");
+            guard.watermark()
+        };
+
+        match watermark {
+            Some(upper) => {
+                let snapshot = {
+                    let guard = index.read().expect("index lock poisoned");
+                    Arc::new(guard.clone())
+                };
+                stream_index_snapshot(dir, bufread, codec, snapshot, from.0, upper)
+            }
             None => stream::empty().boxed(),
         }
     }

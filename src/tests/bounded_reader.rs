@@ -21,16 +21,18 @@ mod tests {
         .await
         .unwrap();
 
+        let txn = writer.transaction().unwrap();
+
         for i in 0..30u64 {
-            writer.push(&Ev(i)).await.unwrap();
+            txn.push(&Ev(i)).await.unwrap();
             if i % 5 == 4 {
                 // Seal blocks frequently so the index has multiple entries to scan.
-                writer.flush().await.unwrap();
+                txn.flush().await.unwrap();
             }
         }
         // Ensure no buffered records remain.
-        writer.flush().await.unwrap();
-        writer.close().await.unwrap();
+        txn.flush().await.unwrap();
+        txn.close().await.unwrap();
 
         let reader = AsyncStreamReader::<codec::SerdeBincode<Ev>>::open(
             cfg.clone(),

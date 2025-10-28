@@ -16,6 +16,10 @@ pub enum StreamError {
     /// Operation on a closed writer/reader
     #[error("closed")]
     Closed,
+
+    /// Attempted to start a new transaction while another is active.
+    #[error("transaction in progress")]
+    TransactionInProgress,
 }
 
 impl From<&'static str> for StreamError {

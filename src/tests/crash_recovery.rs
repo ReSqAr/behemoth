@@ -21,11 +21,12 @@ mod tests {
         )
         .await
         .unwrap();
-        writer.push(&Ev(1)).await.unwrap();
-        writer.push(&Ev(2)).await.unwrap();
-        let wm1 = writer.flush().await.unwrap().unwrap();
+        let txn = writer.transaction().unwrap();
+        txn.push(&Ev(1)).await.unwrap();
+        txn.push(&Ev(2)).await.unwrap();
+        let wm1 = txn.flush().await.unwrap().unwrap();
         assert_eq!(wm1.0, 1);
-        writer.close().await.unwrap();
+        txn.close().await.unwrap();
 
         // 2) Corrupt the index by appending half of an IndexEntry to 00000000.idx
         let idx_path = dir.path().join("00000000.idx");

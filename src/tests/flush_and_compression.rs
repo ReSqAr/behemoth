@@ -28,37 +28,35 @@ mod tests {
         .await
         .unwrap();
 
-        // Push twice, single flush -> should be one block (we'll verify via index).
-        writer
-            .push(&Ev {
-                n: 1,
-                s: "a".into(),
-            })
-            .await
-            .unwrap();
-        writer
-            .push(&Ev {
-                n: 2,
-                s: "b".into(),
-            })
-            .await
-            .unwrap();
-        writer
-            .push(&Ev {
-                n: 3,
-                s: "c".into(),
-            })
-            .await
-            .unwrap();
-        writer
-            .push(&Ev {
-                n: 4,
-                s: "d".into(),
-            })
-            .await
-            .unwrap();
+        let txn = writer.transaction().unwrap();
 
-        let wm = writer.flush().await.unwrap().unwrap();
+        // Push twice, single flush -> should be one block (we'll verify via index).
+        txn.push(&Ev {
+            n: 1,
+            s: "a".into(),
+        })
+        .await
+        .unwrap();
+        txn.push(&Ev {
+            n: 2,
+            s: "b".into(),
+        })
+        .await
+        .unwrap();
+        txn.push(&Ev {
+            n: 3,
+            s: "c".into(),
+        })
+        .await
+        .unwrap();
+        txn.push(&Ev {
+            n: 4,
+            s: "d".into(),
+        })
+        .await
+        .unwrap();
+
+        let wm = txn.flush().await.unwrap().unwrap();
         assert!(wm.0 >= 3);
 
         // Verify read side sees 4 events with contiguous IDs.
@@ -92,6 +90,8 @@ mod tests {
             entries += 1;
         }
         assert_eq!(entries, 1, "expected a single block committed");
+
+        txn.close().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -110,14 +110,16 @@ mod tests {
         )
         .await
         .unwrap();
+        let txn = writer.transaction().unwrap();
+
         for i in 0..2000 {
             let ev = Ev {
                 n: i,
                 s: format!("string-{:04}-{}", i, "x".repeat(40)),
             };
-            let _ = writer.push(&ev).await.unwrap();
+            let _ = txn.push(&ev).await.unwrap();
         }
-        writer.flush().await.unwrap();
+        txn.flush().await.unwrap();
 
         // Read the first block header from 00000000.log and validate sizes.
         let log_path = dir.path().join("00000000.idx");
@@ -136,5 +138,7 @@ mod tests {
         assert_eq!(hdr.records as usize, 2000usize);
         assert!(hdr.compressed_len > 0);
         assert!(hdr.compressed_len <= hdr.uncompressed_len);
+
+        txn.close().await.unwrap();
     }
 }

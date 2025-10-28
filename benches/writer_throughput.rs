@@ -65,7 +65,7 @@ fn bench_writer(c: &mut Criterion) {
 
                             let codec = SerdeBincode::<BenchRecord>::new();
                             let writer = AsyncStreamWriter::open(cfg, codec).await.unwrap();
-
+                            let txn = writer.transaction().unwrap();
                             for i in 0..n {
                                 let rec = BenchRecord {
                                     id: i,
@@ -73,15 +73,15 @@ fn bench_writer(c: &mut Criterion) {
                                     b: 2,
                                     name: incompressible_ascii(232, 0x9E37_79B9_7F4A_7C15 ^ i),
                                 };
-                                writer.push(&rec).await.unwrap();
+                                txn.push(&rec).await.unwrap();
 
                                 if i % flush_after == 0 {
-                                    writer.flush().await.unwrap();
+                                    txn.flush().await.unwrap();
                                 }
                             }
 
-                            let _wm: Option<Offset> = writer.flush().await.unwrap();
-                            writer.close().await.unwrap();
+                            let _wm: Option<Offset> = txn.flush().await.unwrap();
+                            txn.close().await.unwrap();
                         }
                     });
             },
