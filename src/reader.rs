@@ -45,11 +45,7 @@ impl<C: Codec + Clone + Send + Sync + 'static> AsyncStreamReader<C> {
 
     /// Snapshot watermark (last committed id) at time of call.
     pub fn snapshot_watermark(&self) -> Option<Offset> {
-        self.index
-            .read()
-            .expect("index lock poisoned")
-            .watermark()
-            .map(Offset)
+        self.index.read().expect("index lock poisoned").watermark()
     }
 
     /// Bounded pass: yields records with id >= `from` and id <= snapshot watermark, then ends.
@@ -73,7 +69,7 @@ impl<C: Codec + Clone + Send + Sync + 'static> AsyncStreamReader<C> {
                     let guard = index.read().expect("index lock poisoned");
                     Arc::new(guard.clone())
                 };
-                stream_index_snapshot(dir, bufread, codec, snapshot, from.0, upper)
+                stream_index_snapshot(dir, bufread, codec, snapshot, from, upper)
             }
             None => stream::empty().boxed(),
         }

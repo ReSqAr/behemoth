@@ -153,7 +153,7 @@ mod tests {
             let wm = txn.flush().await.unwrap().expect("watermark");
             assert_eq!(wm.0, id, "watermark mismatch after flushing id {id}");
         }
-        assert_eq!(writer.watermark(), Some(TOTAL - 1));
+        assert_eq!(writer.watermark(), Some(Offset(TOTAL - 1)));
 
         txn.close().await.unwrap();
 
@@ -180,7 +180,7 @@ mod tests {
         assert_eq!(index.entries.len(), TOTAL as usize);
         for (i, entry) in index.entries.iter().enumerate() {
             assert_eq!(entry.segment_id, 0, "expected single segment for entry {i}");
-            let id = i as u64;
+            let id = Offset(i as u64);
             assert_eq!(entry.first_id, id, "first_id mismatch at entry {i}");
             assert_eq!(entry.last_id, id, "last_id mismatch at entry {i}");
             assert_eq!(
@@ -226,7 +226,7 @@ mod tests {
             let wm = txn.flush().await.unwrap().expect("watermark");
             assert_eq!(wm.0, id, "watermark mismatch after flushing id {id}");
         }
-        assert_eq!(writer.watermark(), Some(TOTAL - 1));
+        assert_eq!(writer.watermark(), Some(Offset(TOTAL - 1)));
 
         txn.close().await.unwrap();
 
@@ -253,8 +253,8 @@ mod tests {
         for (i, entry) in index.entries.iter().enumerate() {
             let id = i as u64;
             assert_eq!(entry.segment_id, id, "segment mismatch at entry {i}");
-            assert_eq!(entry.first_id, id, "first_id mismatch at entry {i}");
-            assert_eq!(entry.last_id, id, "last_id mismatch at entry {i}");
+            assert_eq!(entry.first_id, Offset(id), "first_id mismatch at entry {i}");
+            assert_eq!(entry.last_id, Offset(id), "last_id mismatch at entry {i}");
             assert_eq!(
                 entry.records, 1,
                 "expected single-record segments at entry {i}"

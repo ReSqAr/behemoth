@@ -169,7 +169,11 @@ async fn cmd_add(
         AsyncStreamWriter::<SerdeBincode<Element>>::open(cfg.clone(), SerdeBincode::new()).await?;
 
     // Compute base id = current watermark + 1, or 0 if empty.
-    let base = writer.watermark().map(|wm| wm + 1).unwrap_or(0);
+    let base = writer
+        .watermark()
+        .map(|wm| wm.saturating_add(1))
+        .map(|o| o.0)
+        .unwrap_or(0);
 
     let mut rng = Xoroshiro128pp::from_seed(seed_from(&path, base));
 
@@ -255,8 +259,8 @@ fn cmd_list_blocks(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "{:>4} {:>10} {:>10} {:>12} {:>10} {:>10} {:>8}",
             e.segment_id,
-            e.first_id,
-            e.last_id,
+            e.first_id.0,
+            e.last_id.0,
             e.file_offset,
             e.block_len,
             e.uncompressed_len,

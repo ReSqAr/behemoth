@@ -21,8 +21,8 @@ pub(crate) fn stream_index_snapshot<C>(
     bufread: usize,
     codec: C,
     index: Arc<InMemIndex>,
-    from: u64,
-    upper: u64,
+    from: Offset,
+    upper: Offset,
 ) -> BoxStream<'static, Result<(Offset, C::Value), StreamError>>
 where
     C: Codec,
@@ -47,7 +47,7 @@ where
                 if payload.next_record_bytes()?.is_none() {
                     break;
                 }
-                id += 1;
+                    id = id.saturating_add(1);
             }
 
             let limit = upper.min(entry.last_id);
@@ -57,8 +57,8 @@ where
                     let value = codec
                         .decode_from(&mut cur)
                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-                    yield (Offset(id), value);
-                    id += 1;
+                    yield (id, value);
+                    id = id.saturating_add(1);
                 } else {
                     Err::<_, StreamError>(
                         io::Error::new(io::ErrorKind::Other, "unexpected end of block payload")

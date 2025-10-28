@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod tests {
+    use crate::transaction::TailFrom;
     use crate::{AsyncStreamWriter, Offset, StreamConfig, codec};
     use futures_util::TryStreamExt;
     use serde::{Deserialize, Serialize};
@@ -26,7 +27,7 @@ mod tests {
 
         // Start reading from 0 before any data is committed.
         let txn = writer.transaction().unwrap();
-        let stream = txn.tail(Offset(0));
+        let stream = txn.tail(TailFrom::Head);
 
         // In the background: push in waves, flushing between waves.
         let bg = tokio::spawn(async move {
@@ -58,6 +59,80 @@ mod tests {
         for (i, (off, ev)) in got.iter().enumerate() {
             assert_eq!(*off, Offset(i as u64), "offset mismatch at {}", i);
             assert_eq!(*ev, Ev(i as u32), "payload mismatch at {}", i);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tail_from_head() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = StreamConfig::builder(dir.path()).build();
+
+        let writer = AsyncStreamWriter::<codec::SerdeBincode<Ev>>::open(
+            cfg.clone(),
+            codec::SerdeBincode::<Ev>::new(),
+        )
+        .await
+        .unwrap();
+
+        let txn = writer.transaction().unwrap();
+
+        txn.push(&Ev(1)).await.unwrap();
+        txn.push(&Ev(2)).await.unwrap();
+        txn.push(&Ev(3)).await.unwrap();
+
+        txn.close().await.unwrap();
+
+        let txn = writer.transaction().unwrap();
+        let stream = txn.tail(TailFrom::Head);
+
+        let bg = tokio::spawn(async move {
+            txn.push(&Ev(4)).await.unwrap();
+            txn.close().await.unwrap();
+        });
+
+        let got: Vec<(Offset, Ev)> = stream.try_collect().await.unwrap();
+        bg.await.unwrap();
+
+        assert_eq!(got.len(), 1, "expected 1 records, got {}", got.len());
+        assert_eq!(got[0].0, Offset(3), "expected Offset 3, got {}", got[0].0.0);
+        assert_eq!(got[0].1, Ev(4), "payload mismatch 4, got {:?}", got[1]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tail_from_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = StreamConfig::builder(dir.path()).build();
+
+        let writer = AsyncStreamWriter::<codec::SerdeBincode<Ev>>::open(
+            cfg.clone(),
+            codec::SerdeBincode::<Ev>::new(),
+        )
+        .await
+        .unwrap();
+
+        let txn = writer.transaction().unwrap();
+
+        txn.push(&Ev(1)).await.unwrap();
+        txn.push(&Ev(2)).await.unwrap();
+        txn.push(&Ev(3)).await.unwrap();
+
+        txn.close().await.unwrap();
+
+        let txn = writer.transaction().unwrap();
+        let stream = txn.tail(TailFrom::Start);
+
+        let bg = tokio::spawn(async move {
+            txn.push(&Ev(4)).await.unwrap();
+            txn.close().await.unwrap();
+        });
+
+        let got: Vec<(Offset, Ev)> = stream.try_collect().await.unwrap();
+        bg.await.unwrap();
+
+        assert_eq!(got.len(), 4, "expected 1 records, got {}", got.len());
+        for (i, (off, ev)) in got.iter().enumerate() {
+            assert_eq!(*off, Offset(i as u64), "offset mismatch at {}", i);
+            assert_eq!(*ev, Ev((i + 1) as u32), "payload mismatch at {}", i);
         }
     }
 }

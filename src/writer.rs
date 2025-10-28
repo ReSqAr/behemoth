@@ -1,6 +1,7 @@
 use std::sync::{Arc, RwLock};
 use tokio::sync::{Mutex, Semaphore, watch};
 
+use crate::Offset;
 use crate::codec::Codec;
 use crate::config::StreamConfig;
 use crate::error::StreamError;
@@ -39,7 +40,7 @@ impl<C: Codec> AsyncStreamWriter<C> {
     }
 
     /// Durable watermark at this moment.
-    pub fn watermark(&self) -> Option<u64> {
+    pub fn watermark(&self) -> Option<Offset> {
         let guard = self.index.read().expect("index lock poisoned");
         guard.watermark()
     }
@@ -65,7 +66,7 @@ impl<C: Codec> AsyncStreamWriter<C> {
             guard.watermark()
         };
         let next_id = match watermark {
-            Some(wm) => wm.saturating_add(1),
+            Some(wm) => wm.0.saturating_add(1),
             None => 0,
         };
 

@@ -1,3 +1,4 @@
+use crate::Offset;
 use crate::format::index::{IndexEntry, IndexHeader};
 use crate::io::segment::{list_segments, segment_filename};
 use std::io::BufReader;
@@ -10,8 +11,8 @@ use std::{
 #[derive(Clone, Copy, Debug)]
 pub struct IndexRef {
     pub segment_id: u64,
-    pub first_id: u64,
-    pub last_id: u64,
+    pub first_id: Offset,
+    pub last_id: Offset,
     pub file_offset: u64,
     pub block_len: u32,
     pub uncompressed_len: u32,
@@ -46,8 +47,8 @@ impl InMemIndex {
                 let e = IndexEntry::decode_from(&buf[..])?;
                 out.push(IndexRef {
                     segment_id: seg_id,
-                    first_id: e.first_id,
-                    last_id: e.last_id,
+                    first_id: Offset(e.first_id),
+                    last_id: Offset(e.last_id),
                     file_offset: e.file_offset,
                     block_len: e.block_len,
                     uncompressed_len: e.uncompressed_len,
@@ -63,8 +64,8 @@ impl InMemIndex {
     pub fn push_entry(&mut self, segment_id: u64, entry: &IndexEntry) {
         self.entries.push(IndexRef {
             segment_id,
-            first_id: entry.first_id,
-            last_id: entry.last_id,
+            first_id: Offset(entry.first_id),
+            last_id: Offset(entry.last_id),
             file_offset: entry.file_offset,
             block_len: entry.block_len,
             uncompressed_len: entry.uncompressed_len,
@@ -73,7 +74,7 @@ impl InMemIndex {
     }
 
     /// Lower bound: first index whose last_id >= target.
-    pub fn lower_bound(&self, target: u64) -> Option<usize> {
+    pub fn lower_bound(&self, target: Offset) -> Option<usize> {
         let mut lo = 0usize;
         let mut hi = self.entries.len();
         while lo < hi {
@@ -92,7 +93,7 @@ impl InMemIndex {
     }
 
     /// Peek last committed id across all segments (watermark).
-    pub fn watermark(&self) -> Option<u64> {
+    pub fn watermark(&self) -> Option<Offset> {
         self.entries.last().map(|e| e.last_id)
     }
 }

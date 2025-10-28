@@ -21,8 +21,8 @@ pub(crate) struct WriterInner<C: Codec> {
     index: Arc<RwLock<InMemIndex>>, // RAM mirror for watermark/lookup
 
     next_id: u64,
-    watermark: Option<u64>,
-    watermark_tx: Option<watch::Sender<Option<u64>>>,
+    watermark: Option<Offset>,
+    watermark_tx: Option<watch::Sender<Option<Offset>>>,
     pending: Vec<IndexEntry>, // soft-rolled, not-yet-committed entries
 
     state: WriterState,
@@ -35,8 +35,8 @@ impl<C: Codec> WriterInner<C> {
         seg: Option<SegmentFiles>,
         index: Arc<RwLock<InMemIndex>>,
         next_id: u64,
-        watermark: Option<u64>,
-        watermark_tx: Option<watch::Sender<Option<u64>>>,
+        watermark: Option<Offset>,
+        watermark_tx: Option<watch::Sender<Option<Offset>>>,
     ) -> Self {
         Self {
             cfg,
@@ -129,7 +129,7 @@ impl<C: Codec> WriterInner<C> {
         }
 
         if self.pending.is_empty() {
-            return Ok(self.watermark.map(Offset));
+            return Ok(self.watermark);
         }
 
         self.commit_pending_entries()?;
@@ -139,7 +139,7 @@ impl<C: Codec> WriterInner<C> {
             self.seg = Some(rotate_segment(current)?);
         }
 
-        Ok(self.watermark.map(Offset))
+        Ok(self.watermark)
     }
 
     pub(crate) fn close_sync(&mut self) -> Result<(), StreamError> {
@@ -202,7 +202,7 @@ impl<C: Codec> WriterInner<C> {
             let mut index = self.index.write().expect("index lock poisoned");
             index.push_entry(segment_id, &entry);
         }
-        self.watermark = Some(entry.last_id);
+        self.watermark = Some(Offset(entry.last_id));
         if let Some(tx) = &self.watermark_tx {
             let _ = tx.send(self.watermark);
         }

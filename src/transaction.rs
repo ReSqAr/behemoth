@@ -16,8 +16,20 @@ pub struct Transaction<C: Codec> {
     bufread: usize,
     index: Arc<RwLock<InMemIndex>>,
     inner: Mutex<WriterInner<C>>,
-    watermark_rx: watch::Receiver<Option<u64>>,
+    watermark_rx: watch::Receiver<Option<Offset>>,
     permit: OwnedSemaphorePermit,
+}
+
+pub enum TailFrom {
+    Offset(Offset),
+    Head,
+    Start,
+}
+
+impl From<Offset> for TailFrom {
+    fn from(offset: Offset) -> Self {
+        Self::Offset(offset)
+    }
 }
 
 impl<C: Codec> Transaction<C> {
@@ -27,7 +39,7 @@ impl<C: Codec> Transaction<C> {
         bufread: usize,
         index: Arc<RwLock<InMemIndex>>,
         inner: Mutex<WriterInner<C>>,
-        watermark_rx: watch::Receiver<Option<u64>>,
+        watermark_rx: watch::Receiver<Option<Offset>>,
         permit: OwnedSemaphorePermit,
     ) -> Self {
         Self {
@@ -64,35 +76,43 @@ impl<C: Codec> Transaction<C> {
         Ok(())
     }
 
-    pub fn subscribe_watermark(&self) -> watch::Receiver<Option<u64>> {
+    pub fn subscribe_watermark(&self) -> watch::Receiver<Option<Offset>> {
         self.watermark_rx.clone()
     }
 
     pub fn tail(
         &self,
-        from: Offset,
+        from: impl Into<TailFrom>,
     ) -> impl Stream<Item = Result<(Offset, C::Value), StreamError>> + Unpin + Send + 'static {
         let codec = self.codec.clone();
         let dir = self.dir.clone();
         let mut watermark_rx = self.watermark_rx.clone();
         let bufread = self.bufread;
         let index = self.index.clone();
+        let from = match from.into() {
+            TailFrom::Offset(from) => from,
+            TailFrom::Start => Offset(0),
+            TailFrom::Head => match *watermark_rx.borrow() {
+                Some(head) => head.saturating_add(1),
+                None => Offset(0),
+            },
+        };
 
         // Stream committed records from the shared in-memory index, then wait for the watermark to advance.
         try_stream! {
-            let mut next_id = from.0;
+            let mut next_id = from;
             let mut cache = TailLogCache::new(dir.clone());
 
             loop {
                 let upper = *watermark_rx.borrow();
 
                 let mut yielded_any = false;
-                if let Some(upper_bound) = upper && next_id <= upper_bound {
-                    let entries: Vec<IndexRef> =  {
+                if let Some(upper_bound) = upper
+                    && next_id <= upper_bound
+                {
+                    let entries: Vec<IndexRef> = {
                         let guard = index.read().expect("index lock poisoned");
-                        let start = guard
-                            .lower_bound(next_id)
-                            .unwrap_or(guard.entries.len());
+                        let start = guard.lower_bound(next_id).unwrap_or(guard.entries.len());
                         guard.entries[start..]
                             .iter()
                             .take_while(|entry| entry.first_id <= upper_bound)
@@ -107,12 +127,21 @@ impl<C: Codec> Transaction<C> {
                         }
 
                         let (_, mut payload) = cache
-                            .open_block(entry.segment_id, entry.file_offset, entry.block_len, bufread)
+                            .open_block(
+                                entry.segment_id,
+                                entry.file_offset,
+                                entry.block_len,
+                                bufread,
+                            )
                             .map_err(StreamError::Io)?;
 
                         let mut id = entry.first_id;
                         while id < next_id {
-                            if payload.next_record_bytes().map_err(StreamError::Io)?.is_none() {
+                            if payload
+                                .next_record_bytes()
+                                .map_err(StreamError::Io)?
+                                .is_none()
+                            {
                                 break;
                             }
                             id = id.saturating_add(1);
@@ -128,7 +157,7 @@ impl<C: Codec> Transaction<C> {
                                     .decode_from(&mut cur)
                                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
                                     .map_err(StreamError::Io)?;
-                                yield (Offset(id), value);
+                                yield (id, value);
                                 id = id.saturating_add(1);
                                 consumed = id;
                                 yielded_any = true;
@@ -158,7 +187,9 @@ impl<C: Codec> Transaction<C> {
                 // Wait for watermark to increase; if sender dropped & no change → end.
                 let before = *watermark_rx.borrow();
                 if watermark_rx.changed().await.is_err() {
-                    if *watermark_rx.borrow() <= before { break; }
+                    if *watermark_rx.borrow() <= before {
+                        break;
+                    }
                 }
             }
         }
