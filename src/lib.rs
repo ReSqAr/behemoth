@@ -23,6 +23,16 @@ pub use crate::codec::serde_bincode::SerdeBincode;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Offset(pub(crate) u64);
 
+impl Offset {
+    pub fn start() -> Self {
+        Offset(0)
+    }
+
+    pub fn increment(&self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+}
+
 impl Into<u64> for Offset {
     fn into(self) -> u64 {
         self.0
