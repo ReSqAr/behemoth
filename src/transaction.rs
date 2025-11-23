@@ -7,14 +7,14 @@ use futures_core::Stream;
 use futures_util::StreamExt;
 use std::io;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, watch};
 
 pub struct Transaction<C: Codec> {
     codec: C,
     dir: PathBuf,
     bufread: usize,
-    index: Arc<RwLock<InMemIndex>>,
+    index: Arc<InMemIndex>,
     inner: Mutex<WriterInner<C>>,
     watermark_rx: watch::Receiver<Option<Offset>>,
     permit: OwnedSemaphorePermit,
@@ -37,7 +37,7 @@ impl<C: Codec> Transaction<C> {
         codec: C,
         dir: PathBuf,
         bufread: usize,
-        index: Arc<RwLock<InMemIndex>>,
+        index: Arc<InMemIndex>,
         inner: Mutex<WriterInner<C>>,
         watermark_rx: watch::Receiver<Option<Offset>>,
         permit: OwnedSemaphorePermit,
@@ -110,15 +110,14 @@ impl<C: Codec> Transaction<C> {
                 if let Some(upper_bound) = upper
                     && next_id <= upper_bound
                 {
-                    let entries: Vec<IndexRef> = {
-                        let guard = index.read().expect("index lock poisoned");
-                        let start = guard.lower_bound(next_id).unwrap_or(guard.entries.len());
-                        guard.entries[start..]
-                            .iter()
-                            .take_while(|entry| entry.first_id <= upper_bound)
-                            .copied()
-                            .collect()
-                    };
+                    let start = index.lower_bound(next_id).unwrap_or(index.len());
+                    let entries: Vec<IndexRef> = index
+                        .entries
+                        .iter()
+                        .skip(start)
+                        .take_while(|(_, entry)| entry.first_id <= upper_bound)
+                        .map(|(_, entry)| *entry)
+                        .collect();
 
                     let mut consumed = next_id;
                     for entry in entries {

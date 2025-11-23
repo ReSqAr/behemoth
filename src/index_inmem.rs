@@ -1,6 +1,7 @@
 use crate::Offset;
 use crate::format::index::{IndexEntry, IndexHeader};
 use crate::io::segment::{list_segments, segment_filename};
+use boxcar::Vec as BoxcarVec;
 use std::io::BufReader;
 use std::{
     fs::File,
@@ -21,12 +22,12 @@ pub struct IndexRef {
 
 #[derive(Clone)]
 pub struct InMemIndex {
-    pub entries: Vec<IndexRef>, // sorted by first_id
+    pub entries: BoxcarVec<IndexRef>, // sorted by first_id
 }
 
 impl InMemIndex {
     pub fn load_all(dir: &Path, bufread: usize) -> io::Result<Self> {
-        let mut out = Vec::new();
+        let out = BoxcarVec::new();
         for seg_id in list_segments(dir)? {
             let (_, idx_name) = segment_filename(seg_id);
             let path = dir.join(idx_name);
@@ -57,11 +58,14 @@ impl InMemIndex {
                 pos += IndexEntry::SIZE as u64;
             }
         }
-        out.sort_by_key(|e| e.first_id);
         Ok(Self { entries: out })
     }
 
-    pub fn push_entry(&mut self, segment_id: u64, entry: &IndexEntry) {
+    pub fn len(&self) -> usize {
+        self.entries.count()
+    }
+
+    pub fn push_entry(&self, segment_id: u64, entry: &IndexEntry) {
         self.entries.push(IndexRef {
             segment_id,
             first_id: Offset(entry.first_id),
@@ -76,7 +80,7 @@ impl InMemIndex {
     /// Lower bound: first index whose last_id >= target.
     pub fn lower_bound(&self, target: Offset) -> Option<usize> {
         let mut lo = 0usize;
-        let mut hi = self.entries.len();
+        let mut hi = self.entries.count();
         while lo < hi {
             let mid = (lo + hi) / 2;
             if self.entries[mid].last_id < target {
@@ -85,7 +89,7 @@ impl InMemIndex {
                 hi = mid;
             }
         }
-        if lo < self.entries.len() {
+        if lo < self.entries.count() {
             Some(lo)
         } else {
             None
@@ -94,6 +98,13 @@ impl InMemIndex {
 
     /// Peek last committed id across all segments (watermark).
     pub fn watermark(&self) -> Option<Offset> {
-        self.entries.last().map(|e| e.last_id)
+        if self.entries.is_empty() {
+            None
+        } else {
+            self.entries
+                .get(self.entries.count() - 1)
+                .copied()
+                .map(|e| e.last_id)
+        }
     }
 }

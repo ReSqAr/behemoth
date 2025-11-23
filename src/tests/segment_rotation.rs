@@ -177,8 +177,8 @@ mod tests {
         assert_eq!(tail_events, reader_events, "tail and reader diverged");
 
         let index = InMemIndex::load_all(&cfg.dir, cfg.read_buffer).unwrap();
-        assert_eq!(index.entries.len(), TOTAL as usize);
-        for (i, entry) in index.entries.iter().enumerate() {
+        assert_eq!(index.entries.count(), TOTAL as usize);
+        for (i, entry) in index.entries.iter() {
             assert_eq!(entry.segment_id, 0, "expected single segment for entry {i}");
             let id = Offset(i as u64);
             assert_eq!(entry.first_id, id, "first_id mismatch at entry {i}");
@@ -249,8 +249,8 @@ mod tests {
         assert_eq!(tail_events, reader_events, "tail and reader diverged");
 
         let index = InMemIndex::load_all(&cfg.dir, cfg.read_buffer).unwrap();
-        assert_eq!(index.entries.len(), TOTAL as usize);
-        for (i, entry) in index.entries.iter().enumerate() {
+        assert_eq!(index.entries.count(), TOTAL as usize);
+        for (i, entry) in index.entries.iter() {
             let id = i as u64;
             assert_eq!(entry.segment_id, id, "segment mismatch at entry {i}");
             assert_eq!(entry.first_id, Offset(id), "first_id mismatch at entry {i}");

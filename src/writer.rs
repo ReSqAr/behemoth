@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore, watch};
 
 use crate::Offset;
@@ -18,7 +18,7 @@ use crate::writer_inner::WriterInner;
 pub struct AsyncStreamWriter<C: Codec> {
     codec: C,
     cfg: StreamConfig,
-    index: Arc<RwLock<InMemIndex>>,
+    index: Arc<InMemIndex>,
     transaction_semaphore: Arc<Semaphore>,
 }
 
@@ -29,7 +29,7 @@ impl<C: Codec> AsyncStreamWriter<C> {
 
         // Load all index entries into RAM
         let index = InMemIndex::load_all(&cfg.dir, cfg.read_buffer)?;
-        let index = Arc::new(RwLock::new(index));
+        let index = Arc::new(index);
 
         Ok(Self {
             codec,
@@ -41,8 +41,7 @@ impl<C: Codec> AsyncStreamWriter<C> {
 
     /// Durable watermark at this moment.
     pub fn watermark(&self) -> Option<Offset> {
-        let guard = self.index.read().expect("index lock poisoned");
-        guard.watermark()
+        self.index.watermark()
     }
 
     pub fn reader(&self) -> AsyncStreamReader<C> {
@@ -61,10 +60,7 @@ impl<C: Codec> AsyncStreamWriter<C> {
             .try_acquire_owned()
             .map_err(|_| StreamError::TransactionInProgress)?;
 
-        let watermark = {
-            let guard = self.index.read().expect("index lock poisoned");
-            guard.watermark()
-        };
+        let watermark = { self.index.watermark() };
         let next_id = match watermark {
             Some(wm) => wm.0.saturating_add(1),
             None => 0,

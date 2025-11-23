@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 async-stream = "0.3"
 bincode = { version = "2", features = ["serde"], optional = true }
+boxcar = "0.2"
 clap = { version = "4", features = ["derive"] }
 futures-core = "0.3"
 futures-util = "0.3"

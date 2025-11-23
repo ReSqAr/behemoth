@@ -29,9 +29,9 @@ where
 {
     try_stream! {
         let mut next_id = from;
-        let start = index.lower_bound(from).unwrap_or(index.entries.len());
+        let start = index.lower_bound(from).unwrap_or(index.len());
 
-        for entry in index.entries[start..].iter().copied() {
+        for (_, entry) in index.entries.iter().skip(start) {
             if entry.first_id > upper {
                 break;
             }

@@ -4,7 +4,7 @@ use crate::io::open_block::OpenBlock;
 use crate::io::segment::{SegmentFiles, rotate_segment};
 use crate::{InMemIndex, Offset, StreamConfig, StreamError};
 use std::io;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tokio::sync::watch;
 
 pub enum WriterState {
@@ -18,7 +18,7 @@ pub(crate) struct WriterInner<C: Codec> {
     codec: C,
 
     seg: Option<SegmentFiles>, // active segment (.log opened O_APPEND, .idx read+write)
-    index: Arc<RwLock<InMemIndex>>, // RAM mirror for watermark/lookup
+    index: Arc<InMemIndex>,    // RAM mirror for watermark/lookup
 
     next_id: u64,
     watermark: Option<Offset>,
@@ -33,7 +33,7 @@ impl<C: Codec> WriterInner<C> {
         cfg: StreamConfig,
         codec: C,
         seg: Option<SegmentFiles>,
-        index: Arc<RwLock<InMemIndex>>,
+        index: Arc<InMemIndex>,
         next_id: u64,
         watermark: Option<Offset>,
         watermark_tx: Option<watch::Sender<Option<Offset>>>,
@@ -198,10 +198,7 @@ impl<C: Codec> WriterInner<C> {
             let segment = self.segment_mut();
             segment.append_index_entry(&entry)?;
         }
-        {
-            let mut index = self.index.write().expect("index lock poisoned");
-            index.push_entry(segment_id, &entry);
-        }
+        self.index.push_entry(segment_id, &entry);
         self.watermark = Some(Offset(entry.last_id));
         if let Some(tx) = &self.watermark_tx {
             let _ = tx.send(self.watermark);

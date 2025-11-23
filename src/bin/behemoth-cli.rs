@@ -255,7 +255,7 @@ fn cmd_list_blocks(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         "{:>4} {:>10} {:>10} {:>12} {:>10} {:>10} {:>8}",
         "seg", "first_id", "last_id", "file_offset", "blk_len", "uncomp", "recs"
     );
-    for e in index.entries.iter() {
+    for (_, e) in index.entries.iter() {
         println!(
             "{:>4} {:>10} {:>10} {:>12} {:>10} {:>10} {:>8}",
             e.segment_id,
