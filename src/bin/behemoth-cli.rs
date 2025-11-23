@@ -4,8 +4,7 @@ use std::time::{Duration, Instant, SystemTime};
 use clap::{Parser, Subcommand};
 
 use behemoth::{
-    AsyncStreamReader, AsyncStreamWriter, Compression, InMemIndex, Offset, SerdeBincode,
-    StreamConfig,
+    AsyncStreamReader, AsyncStreamWriter, Compression, InMemIndex, SerdeBincode, StreamConfig,
 };
 
 #[derive(clap::Parser, Debug)]
@@ -172,7 +171,7 @@ async fn cmd_add(
     let base = writer
         .watermark()
         .map(|wm| wm.saturating_add(1))
-        .map(|o| o.0)
+        .map(|o| o.into())
         .unwrap_or(0);
 
     let mut rng = Xoroshiro128pp::from_seed(seed_from(&path, base));
@@ -259,8 +258,8 @@ fn cmd_list_blocks(path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "{:>4} {:>10} {:>10} {:>12} {:>10} {:>10} {:>8}",
             e.segment_id,
-            e.first_id.0,
-            e.last_id.0,
+            Into::<u64>::into(e.first_id),
+            Into::<u64>::into(e.last_id),
             e.file_offset,
             e.block_len,
             e.uncompressed_len,
@@ -283,7 +282,7 @@ async fn cmd_read(
     let max = n.unwrap_or(u64::MAX);
 
     use futures_util::TryStreamExt;
-    let mut s = reader.from(Offset(from));
+    let mut s = reader.from(from.into());
     while let Some((off, el)) = s.try_next().await? {
         // first 16 hex chars = first 8 bytes as hex
         let n = el.data.len().min(8);
@@ -292,7 +291,7 @@ async fn cmd_read(
             use std::fmt::Write as _;
             let _ = write!(hex, "{:02x}", b);
         }
-        println!("{} {} {} {}", off.0, el.id, el.seq, hex);
+        println!("{} {} {} {}", Into::<u64>::into(off), el.id, el.seq, hex);
         i += 1;
         if i >= max {
             break;

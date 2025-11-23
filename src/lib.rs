@@ -21,7 +21,19 @@ pub use crate::writer::AsyncStreamWriter;
 pub use crate::codec::serde_bincode::SerdeBincode;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct Offset(pub u64);
+pub struct Offset(pub(crate) u64);
+
+impl Into<u64> for Offset {
+    fn into(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for Offset {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
 
 impl Offset {
     pub fn saturating_add(&self, o: u32) -> Self {
