@@ -1,7 +1,7 @@
 use crate::codec::Codec;
 use crate::io::tail_log_cache::TailLogCache;
 use crate::writer_inner::WriterInner;
-use crate::{InMemIndex, IndexRef, Offset, StreamError};
+use crate::{InMemIndex, Offset, StreamError};
 use async_stream::try_stream;
 use futures_core::Stream;
 use futures_util::StreamExt;
@@ -9,6 +9,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, watch};
+use tokio::task;
 
 pub struct Transaction<C: Codec> {
     codec: C,
@@ -111,13 +112,12 @@ impl<C: Codec> Transaction<C> {
                     && next_id <= upper_bound
                 {
                     let start = index.lower_bound(next_id).unwrap_or(index.len());
-                    let entries: Vec<IndexRef> = index
+                    let entries = index
                         .entries
                         .iter()
                         .skip(start)
                         .take_while(|(_, entry)| entry.first_id <= upper_bound)
-                        .map(|(_, entry)| *entry)
-                        .collect();
+                        .map(|(_, entry)| *entry);
 
                     let mut consumed = next_id;
                     for entry in entries {
@@ -125,22 +125,23 @@ impl<C: Codec> Transaction<C> {
                             break;
                         }
 
-                        let (_, mut payload) = cache
-                            .open_block(
-                                entry.segment_id,
-                                entry.file_offset,
-                                entry.block_len,
-                                bufread,
-                            )
-                            .map_err(StreamError::Io)?;
+                        let (_, mut payload) = task::block_in_place(|| {
+                            cache
+                                .open_block(
+                                    entry.segment_id,
+                                    entry.file_offset,
+                                    entry.block_len,
+                                    bufread,
+                                )
+                                .map_err(StreamError::Io)
+                        })?;
 
                         let mut id = entry.first_id;
                         while id < next_id {
-                            if payload
-                                .next_record_bytes()
-                                .map_err(StreamError::Io)?
-                                .is_none()
-                            {
+                            let next = task::block_in_place(|| {
+                                payload.next_record_bytes().map_err(StreamError::Io)
+                            })?;
+                            if next.is_none() {
                                 break;
                             }
                             id = id.saturating_add(1);
@@ -148,14 +149,17 @@ impl<C: Codec> Transaction<C> {
 
                         let limit = upper_bound.min(entry.last_id);
                         while id <= limit {
-                            if let Some(mut bytes) =
-                                payload.next_record_bytes().map_err(StreamError::Io)?
-                            {
+                            let next = task::block_in_place(|| {
+                                payload.next_record_bytes().map_err(StreamError::Io)
+                            })?;
+                            if let Some(mut bytes) = next {
                                 let mut cur = std::io::Cursor::new(&mut bytes[..]);
-                                let value = codec
-                                    .decode_from(&mut cur)
-                                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
-                                    .map_err(StreamError::Io)?;
+                                let value = task::block_in_place(|| {
+                                    codec
+                                        .decode_from(&mut cur)
+                                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+                                })
+                                .map_err(StreamError::Io)?;
                                 yield (id, value);
                                 id = id.saturating_add(1);
                                 consumed = id;
@@ -171,7 +175,7 @@ impl<C: Codec> Transaction<C> {
                             }
                         }
 
-                        payload.finish().map_err(StreamError::Io)?;
+                        task::block_in_place(|| payload.finish().map_err(StreamError::Io))?;
                         next_id = consumed;
                         if next_id > upper_bound {
                             break;

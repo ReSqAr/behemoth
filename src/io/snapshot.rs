@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_stream::try_stream;
 use futures_util::StreamExt;
 use futures_util::stream::BoxStream;
+use tokio::task;
 
 use crate::codec::Codec;
 use crate::index_inmem::InMemIndex;
@@ -38,25 +39,35 @@ where
 
             let (log_name, _) = segment_filename(entry.segment_id);
             let path = dir.join(log_name);
-            let (_hdr, mut payload) =
-                open_block_stream_at_path(&path, entry.file_offset, entry.block_len, bufread)?;
+            let (_hdr, mut payload) = task::block_in_place(|| {
+                open_block_stream_at_path(&path, entry.file_offset, entry.block_len, bufread)
+                    .map_err(StreamError::Io)
+            })?;
 
             // Skip already-consumed records in the first block (if needed).
             let mut id = entry.first_id;
             while id < next_id {
-                if payload.next_record_bytes()?.is_none() {
+                let next = task::block_in_place(|| {
+                    payload.next_record_bytes().map_err(StreamError::Io)
+                })?;
+                if next.is_none() {
                     break;
                 }
-                    id = id.saturating_add(1);
+                id = id.saturating_add(1);
             }
 
             let limit = upper.min(entry.last_id);
             while id <= limit {
-                if let Some(mut bytes) = payload.next_record_bytes()? {
+                let next = task::block_in_place(|| {
+                    payload.next_record_bytes().map_err(StreamError::Io)
+                })?;
+                if let Some(mut bytes) = next {
                     let mut cur = std::io::Cursor::new(&mut bytes[..]);
-                    let value = codec
-                        .decode_from(&mut cur)
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    let value = task::block_in_place(|| {
+                        codec
+                            .decode_from(&mut cur)
+                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+                    })?;
                     yield (id, value);
                     id = id.saturating_add(1);
                 } else {
@@ -67,7 +78,7 @@ where
                 }
             }
 
-            payload.finish()?;
+            task::block_in_place(|| payload.finish().map_err(StreamError::Io))?;
             next_id = id;
 
             if next_id > upper {
