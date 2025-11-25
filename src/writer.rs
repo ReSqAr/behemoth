@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::{io, sync::Arc};
 use tokio::sync::{Mutex, Semaphore, watch};
+use tokio::task;
 
 use crate::Offset;
 use crate::codec::Codec;
@@ -24,11 +25,18 @@ pub struct AsyncStreamWriter<C: Codec> {
 
 impl<C: Codec> AsyncStreamWriter<C> {
     pub async fn open(cfg: StreamConfig, codec: C) -> Result<Self, StreamError> {
-        // Recovery + open active segment
-        let _ = open_active_segment(&cfg.dir)?; // truncates to safe_end & writes headers if new
+        let cfg_clone = cfg.clone();
+        let (cfg, index) = task::spawn_blocking(move || {
+            // Recovery + open active segment
+            let _ = open_active_segment(&cfg_clone.dir)?; // truncates to safe_end & writes headers if new
 
-        // Load all index entries into RAM
-        let index = InMemIndex::load_all(&cfg.dir, cfg.read_buffer)?;
+            // Load all index entries into RAM
+            let index = InMemIndex::load_all(&cfg_clone.dir, cfg_clone.read_buffer)?;
+            Ok::<_, StreamError>((cfg_clone, index))
+        })
+        .await
+        .map_err(|e| StreamError::Io(io::Error::new(io::ErrorKind::Other, e)))??;
+
         let index = Arc::new(index);
 
         Ok(Self {
